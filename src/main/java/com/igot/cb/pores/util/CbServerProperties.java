@@ -88,6 +88,9 @@ public class CbServerProperties {
   @Value("${lti.deployment.id:}")
   private String ltiDeploymentId;
 
+  @Value("${content.partner.search.cache.key:demand_search_result}")
+  private String contentPartnerSearchCacheKey;
+
   public List<String> getBookmarkDuplicateNotAllowedCategory() {
     return Arrays.asList(bookmarkDuplicateNotAllowedCategory.split(","));
   }

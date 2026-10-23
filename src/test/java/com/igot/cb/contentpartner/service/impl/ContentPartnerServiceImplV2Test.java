@@ -65,6 +65,7 @@ class ContentPartnerServiceImplV2Test {
                 cacheService, redisTemplate, cbServerProperties, secureRandom);
         lenient().when(cbServerProperties.getContentPartnerV2ValidationSchemaPath()).thenReturn(V2_SCHEMA);
         lenient().when(cbServerProperties.getElasticContentJsonPath()).thenReturn(ES_PATH);
+        lenient().when(cbServerProperties.getContentPartnerSearchCacheKey()).thenReturn(Constants.JWT_SECRET_KEY);
         lenient().when(cbServerProperties.getLtiVersion()).thenReturn(LTI_VERSION);
         lenient().when(cbServerProperties.getLtiToolIssuer()).thenReturn(LTI_ISSUER);
         lenient().when(cbServerProperties.getLtiClientId()).thenReturn(LTI_CLIENT_ID);
@@ -667,5 +668,71 @@ class ContentPartnerServiceImplV2Test {
         assertEquals(HttpStatus.BAD_REQUEST, response.getResponseCode());
         assertTrue(response.getParams().getErrMsg().contains("ltiConfiguration: is missing but it is required"));
         verify(entityRepository, never()).save(any());
+    }
+
+    // ---------- search tags ----------
+
+    private JsonNode savedSearchTags(ObjectNode request) {
+        service.createOrUpdate(request);
+        return captureSaved().getData().path(Constants.SEARCHTAGS);
+    }
+
+    @Test
+    void searchTags_keepExistingTextTagsAndAddLowerCasedName() {
+        ObjectNode request = createRequest("Lti Partner");
+        request.putArray(Constants.SEARCHTAGS).add("existing").add("").add(5);
+
+        JsonNode tags = savedSearchTags(request);
+
+        assertEquals(2, tags.size());
+        assertEquals("existing", tags.get(0).asText());
+        assertEquals("lti partner", tags.get(1).asText());
+    }
+
+    @Test
+    void searchTags_doNotDuplicateNameAlreadyPresent() {
+        ObjectNode request = createRequest("Lti Partner");
+        request.putArray(Constants.SEARCHTAGS).add("lti partner");
+
+        JsonNode tags = savedSearchTags(request);
+
+        assertEquals(1, tags.size());
+    }
+
+    @Test
+    void searchTags_blankNameIsNotAdded() {
+        ObjectNode request = createRequest("   ");
+
+        assertEquals(0, savedSearchTags(request).size());
+    }
+
+    @Test
+    void searchTags_nonArrayValueIsIgnored() {
+        ObjectNode request = createRequest("Lti Partner");
+        request.put(Constants.SEARCHTAGS, "not-an-array");
+
+        JsonNode tags = savedSearchTags(request);
+
+        assertEquals(1, tags.size());
+        assertEquals("lti partner", tags.get(0).asText());
+    }
+
+    @Test
+    void searchTags_missingNameAddsNothing() {
+        ObjectNode request = mapper.createObjectNode();
+        request.put("websiteUrl", "https://example.com");
+
+        assertEquals(0, savedSearchTags(request).size());
+    }
+
+    @Test
+    void update_searchCacheKeyIsSignedWithTheSameKeyAsV1() {
+        update(storedPartner(storedLtiData()), createRequest("Partner"));
+
+        ArgumentCaptor<String> cacheKey = ArgumentCaptor.forClass(String.class);
+        verify(redisTemplate).delete(cacheKey.capture());
+        // verifies with the V1 constant, so a different signing key would throw here
+        com.auth0.jwt.JWT.require(com.auth0.jwt.algorithms.Algorithm.HMAC256(Constants.JWT_SECRET_KEY))
+                .build().verify(cacheKey.getValue());
     }
 }

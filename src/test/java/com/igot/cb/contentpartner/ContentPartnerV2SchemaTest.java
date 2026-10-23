@@ -61,16 +61,10 @@ class ContentPartnerV2SchemaTest {
     }
 
     @Test
-    void explicitSamlIsValid() {
+    void explicitSamlWithoutLtiConfigurationIsValid() {
         ObjectNode node = basePartner();
         node.put("protocol", "SAML");
-        assertDoesNotThrow(() -> validation.validatePayload(V2_SCHEMA, node));
-    }
-
-    @Test
-    void samlWithoutLtiConfigurationIsValid() {
-        ObjectNode node = basePartner();
-        node.put("protocol", "SAML");
+        assertFalse(node.has("ltiConfiguration"));
         assertDoesNotThrow(() -> validation.validatePayload(V2_SCHEMA, node));
     }
 

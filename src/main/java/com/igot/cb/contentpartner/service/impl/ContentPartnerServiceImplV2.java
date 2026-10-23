@@ -7,7 +7,9 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.BooleanNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.TextNode;
 import com.igot.cb.contentpartner.entity.ContentPartnerEntity;
 import com.igot.cb.contentpartner.repository.ContentPartnerRepository;
 import com.igot.cb.contentpartner.service.ContentPartnerServiceV2;
@@ -173,61 +175,76 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
         String partnerName = partnerDetails.path(Constants.DATA).get(Constants.CONTENT_PARTNER_NAME).asText();
         String existingId = partnerDetails.get("id").asText();
         Optional<ContentPartnerEntity> content = entityRepository.findById(existingId);
-        if (content.isPresent()) {
-            if (entityRepository.findByContentPartnerName(partnerName).filter(entity -> !entity.getId().equals(existingId)).isPresent()) {
-                response.getParams().setErrMsg(Constants.CONTENT_PARTNER_NAME_ALREADY_PRESENT);
-                response.getParams().setStatus(Constants.FAILED);
-                response.setResponseCode(HttpStatus.BAD_REQUEST);
-                return response;
-            }
-            ContentPartnerEntity jsonEntity = content.get();
-            String existingLicenceType = jsonEntity.getData().path(Constants.LICENCE_TYPE).asText(null);
-            JsonNode incomingLicenceType = data.get(Constants.LICENCE_TYPE);
-            if (StringUtils.isNotBlank(existingLicenceType) && incomingLicenceType != null && !incomingLicenceType.isNull()
-                    && !existingLicenceType.equals(incomingLicenceType.asText())) {
-                response.getParams().setErrMsg(Constants.LICENCE_TYPE_CANNOT_BE_CHANGED);
-                response.getParams().setStatus(Constants.FAILED);
-                response.setResponseCode(HttpStatus.BAD_REQUEST);
-                return response;
-            }
-            if (isLtiProtocol(data)) {
-                String protocolError = applyLtiConfiguration(data, jsonEntity.getData());
-                if (protocolError != null) {
-                    ProjectUtil.errorResponse(response, protocolError, HttpStatus.BAD_REQUEST);
-                    return response;
-                }
-            } else {
-                log.info("Protocol is {}, skipping LTI configuration enrichment",
-                        data.path(Constants.PROTOCOL).asText("not set"));
-            }
-            String partnerCode = jsonEntity.getData().path(Constants.PARTNERCODE).asText();
-            createContentPartnerEntity(jsonEntity, partnerDetails);
-            ContentPartnerEntity updateJsonEntity = entityRepository.save(jsonEntity);
-            if (!ObjectUtils.isEmpty(updateJsonEntity)) {
-                Map<String, Object> jsonMap =
-                        objectMapper.convertValue(updateJsonEntity.getData(), MAP_TYPE);
-                esUtilService.updateDocument(Constants.CONTENT_PROVIDER_INDEX_NAME, Constants.INDEX_TYPE, existingId, jsonMap, cbServerProperties.getElasticContentJsonPath());
-                Map<String, Object> result = objectMapper.convertValue(updateJsonEntity, MAP_TYPE);
-
-                if (jsonMap != null && StringUtils.isNotBlank((String) jsonMap.get(Constants.PARTNERCODE))) {
-                    log.info(Constants.CONTENT_PARTNER_UPDATE_CACHE_DELETE, jsonMap.get(Constants.PARTNERCODE));
-                    if (StringUtils.isNotBlank(partnerCode)) {
-                        cacheService.deleteCache(partnerCode);
-                    }
-                    cacheService.deleteCache(updateJsonEntity.getId());
-                    // Clear search-related Redis cache
-                    clearSearchCache();
-                }
-                log.info(Constants.UPDATED_CONTENT_PARTNER);
-                response.setResult(result);
-                response.setResponseCode(HttpStatus.OK);
-            }
-        } else {
-            response.getParams().setErrMsg(Constants.DATA_NOT_PRESENT);
-            response.getParams().setStatus(Constants.FAILED);
-            response.setResponseCode(HttpStatus.BAD_REQUEST);
+        if (content.isEmpty()) {
+            ProjectUtil.errorResponse(response, Constants.DATA_NOT_PRESENT, HttpStatus.BAD_REQUEST);
+            return response;
         }
+        ContentPartnerEntity jsonEntity = content.get();
+        String updateError = findUpdateError(partnerName, existingId, data, jsonEntity);
+        if (updateError != null) {
+            ProjectUtil.errorResponse(response, updateError, HttpStatus.BAD_REQUEST);
+            return response;
+        }
+        return saveUpdatedPartner(response, partnerDetails, jsonEntity, existingId);
+    }
+
+    /**
+     * Business checks run before an update is applied, in this order: name uniqueness, licence type
+     * immutability, LTI configuration.
+     *
+     * @return an error message for a 400 response, or null when the update may proceed
+     */
+    private String findUpdateError(String partnerName, String existingId, JsonNode data, ContentPartnerEntity jsonEntity) {
+        if (entityRepository.findByContentPartnerName(partnerName).filter(entity -> !entity.getId().equals(existingId)).isPresent()) {
+            return Constants.CONTENT_PARTNER_NAME_ALREADY_PRESENT;
+        }
+        if (isLicenceTypeChanged(data, jsonEntity)) {
+            return Constants.LICENCE_TYPE_CANNOT_BE_CHANGED;
+        }
+        if (isLtiProtocol(data)) {
+            return applyLtiConfiguration(data, jsonEntity.getData());
+        }
+        log.info("Protocol is {}, skipping LTI configuration enrichment",
+                data.path(Constants.PROTOCOL).asText("not set"));
+        return null;
+    }
+
+    private boolean isLicenceTypeChanged(JsonNode data, ContentPartnerEntity jsonEntity) {
+        String existingLicenceType = jsonEntity.getData().path(Constants.LICENCE_TYPE).asText(null);
+        JsonNode incomingLicenceType = data.get(Constants.LICENCE_TYPE);
+        return StringUtils.isNotBlank(existingLicenceType) && incomingLicenceType != null && !incomingLicenceType.isNull()
+                && !existingLicenceType.equals(incomingLicenceType.asText());
+    }
+
+    private ApiResponse saveUpdatedPartner(ApiResponse response, JsonNode partnerDetails,
+                                           ContentPartnerEntity jsonEntity, String existingId) {
+        String partnerCode = jsonEntity.getData().path(Constants.PARTNERCODE).asText();
+        createContentPartnerEntity(jsonEntity, partnerDetails);
+        ContentPartnerEntity updateJsonEntity = entityRepository.save(jsonEntity);
+        if (ObjectUtils.isEmpty(updateJsonEntity)) {
+            return response;
+        }
+        Map<String, Object> jsonMap = objectMapper.convertValue(updateJsonEntity.getData(), MAP_TYPE);
+        esUtilService.updateDocument(Constants.CONTENT_PROVIDER_INDEX_NAME, Constants.INDEX_TYPE, existingId, jsonMap, cbServerProperties.getElasticContentJsonPath());
+        Map<String, Object> result = objectMapper.convertValue(updateJsonEntity, MAP_TYPE);
+        clearUpdatedPartnerCaches(jsonMap, partnerCode, updateJsonEntity.getId());
+        log.info(Constants.UPDATED_CONTENT_PARTNER);
+        response.setResult(result);
+        response.setResponseCode(HttpStatus.OK);
         return response;
+    }
+
+    private void clearUpdatedPartnerCaches(Map<String, Object> jsonMap, String previousPartnerCode, String id) {
+        if (jsonMap == null || StringUtils.isBlank((String) jsonMap.get(Constants.PARTNERCODE))) {
+            return;
+        }
+        log.info(Constants.CONTENT_PARTNER_UPDATE_CACHE_DELETE, jsonMap.get(Constants.PARTNERCODE));
+        if (StringUtils.isNotBlank(previousPartnerCode)) {
+            cacheService.deleteCache(previousPartnerCode);
+        }
+        cacheService.deleteCache(id);
+        // Clear search-related Redis cache
+        clearSearchCache();
     }
 
     /**
@@ -247,10 +264,10 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
                     ? null : Constants.ERR_LTI_CONFIGURATION_REQUIRED;
         }
         ObjectNode ltiConfiguration = (ObjectNode) requested;
-        ltiConfiguration.put(LTI_VERSION, requiredLtiSetting(cbServerProperties.getLtiVersion(), "lti.version"));
-        ltiConfiguration.put(LTI_TOOL_ISSUER, requiredLtiSetting(cbServerProperties.getLtiToolIssuer(), "lti.tool.issuer"));
-        ltiConfiguration.put(LTI_CLIENT_ID, requiredLtiSetting(cbServerProperties.getLtiClientId(), "lti.client.id"));
-        ltiConfiguration.put(LTI_DEPLOYMENT_ID, requiredLtiSetting(cbServerProperties.getLtiDeploymentId(), "lti.deployment.id"));
+        ltiConfiguration.set(LTI_VERSION, TextNode.valueOf(requiredLtiSetting(cbServerProperties.getLtiVersion(), "lti.version")));
+        ltiConfiguration.set(LTI_TOOL_ISSUER, TextNode.valueOf(requiredLtiSetting(cbServerProperties.getLtiToolIssuer(), "lti.tool.issuer")));
+        ltiConfiguration.set(LTI_CLIENT_ID, TextNode.valueOf(requiredLtiSetting(cbServerProperties.getLtiClientId(), "lti.client.id")));
+        ltiConfiguration.set(LTI_DEPLOYMENT_ID, TextNode.valueOf(requiredLtiSetting(cbServerProperties.getLtiDeploymentId(), "lti.deployment.id")));
         return null;
     }
 
@@ -294,10 +311,8 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
         // Add contentPartnerName to searchTags
         if (formattedData.has("contentPartnerName")) {
             String partnerName = formattedData.get("contentPartnerName").textValue();
-            if (StringUtils.isNotBlank(partnerName)) {
-                if (!searchTags.contains(partnerName.toLowerCase())) {
-                    searchTags.add(partnerName.toLowerCase());
-                }
+            if (StringUtils.isNotBlank(partnerName) && !searchTags.contains(partnerName.toLowerCase())) {
+                searchTags.add(partnerName.toLowerCase());
             }
         }
 
@@ -332,7 +347,7 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
                 String reqJsonString = objectMapper.writeValueAsString(requestPayload);
                 return JWT.create()
                         .withClaim(Constants.REQUEST_PAYLOAD, reqJsonString)
-                        .sign(Algorithm.HMAC256(Constants.JWT_SECRET_KEY));
+                        .sign(Algorithm.HMAC256(cbServerProperties.getContentPartnerSearchCacheKey()));
             } catch (JsonProcessingException e) {
                 log.error("Error occurred while converting json object to json string", e);
             }
@@ -382,10 +397,10 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
         objectNode.remove(Constants.TRANSFORM_CONTENT_VIA_API);
         objectNode.remove(Constants.TRANSFORM_PROGRESS_VIA_API);
         ObjectNode dataNode = (ObjectNode) objectNode.remove(Constants.DATA);
-        dataNode.put(Constants.CREATED_ON, String.valueOf(jsonEntity.getCreatedOn()));
-        dataNode.put(Constants.UPDATED_ON, String.valueOf(currentTime));
-        ((ObjectNode) partnerDetails).put(Constants.DOCUMENT_UPLOADED_DATE, partnerDetails.path(Constants.DOCUMENT_UPLOADED_DATE).asText(""));
-        dataNode.put(Constants.IS_ACTIVE, Constants.ACTIVE_STATUS);
+        dataNode.set(Constants.CREATED_ON, TextNode.valueOf(String.valueOf(jsonEntity.getCreatedOn())));
+        dataNode.set(Constants.UPDATED_ON, TextNode.valueOf(String.valueOf(currentTime)));
+        objectNode.set(Constants.DOCUMENT_UPLOADED_DATE, TextNode.valueOf(partnerDetails.path(Constants.DOCUMENT_UPLOADED_DATE).asText("")));
+        dataNode.set(Constants.IS_ACTIVE, BooleanNode.valueOf(Constants.ACTIVE_STATUS));
         updateOtherDetailsWithDefaultValue(dataNode, jsonEntity);
         addSearchTags(dataNode);
         jsonEntity.setData(dataNode);
