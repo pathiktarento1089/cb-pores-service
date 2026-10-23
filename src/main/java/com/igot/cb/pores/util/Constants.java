@@ -400,6 +400,11 @@ public class Constants {
     public static final String LICENCE_TYPE_USER = "User";
     public static final String LICENCE_TYPE_COURSE = "Course";
     public static final String LICENCE_TYPE_CANNOT_BE_CHANGED = "licenseType cannot be changed once it has been configured for a provider";
+    // Content partner integration protocol (SAML is the legacy default when absent)
+    public static final String PROTOCOL = "protocol";
+    public static final String PROTOCOL_LTI = "LTI";
+    public static final String LTI_CONFIGURATION = "ltiConfiguration";
+    public static final String ERR_LTI_CONFIGURATION_REQUIRED = "ltiConfiguration is required when protocol is LTI";
     public static final String UPDATED_CONTENT_PARTNER = "updated the content partner";
     public static final String CONTENT_PARTNER_CREATED = "Content partner created successfully";
     public static final String CONTENT_PARTNER_CACHE_DELETE = "during content partner create Deleting cache for partner code {}";

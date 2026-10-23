@@ -73,6 +73,21 @@ public class CbServerProperties {
   @Value("${partner.code.characters}")
   private String partnerCodeChar;
 
+  @Value("${content.partner.v2.validation.schema.path}")
+  private String contentPartnerV2ValidationSchemaPath;
+
+  @Value("${lti.version:1.3}")
+  private String ltiVersion;
+
+  @Value("${lti.tool.issuer:}")
+  private String ltiToolIssuer;
+
+  @Value("${lti.client.id:}")
+  private String ltiClientId;
+
+  @Value("${lti.deployment.id:}")
+  private String ltiDeploymentId;
+
   public List<String> getBookmarkDuplicateNotAllowedCategory() {
     return Arrays.asList(bookmarkDuplicateNotAllowedCategory.split(","));
   }
