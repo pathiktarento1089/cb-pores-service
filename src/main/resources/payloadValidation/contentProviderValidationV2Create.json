@@ -1,0 +1,203 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "contentPartnerName": {
+      "minLength": 3,
+      "maxLength": 70,
+      "pattern": "^[a-zA-Z][a-zA-Z0-9\\.\\-_\\$/:\\[\\]'!\\s\\(\\)]*$",
+      "type": "string"
+    },
+    "description": {
+      "minLength": 3,
+      "maxLength": 500,
+      "type": "string",
+      "pattern": "^[a-zA-Z][a-zA-Z0-9\\.\\-_\\$/:\\[\\]',!\\s]*$"
+    },
+    "isActive": {
+      "type": "boolean"
+    },
+    "link": {
+      "type": "string",
+      "format": "uri"
+    },
+    "websiteUrl": {
+      "type": "string",
+      "format": "uri"
+    },
+    "documentUrl": {
+      "type": "string",
+      "format": "uri"
+    },
+    "providerTips": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "createdOn": {
+      "type": "string"
+    },
+    "updatedOn": {
+      "type": "string"
+    },
+    "partnerCode": {
+      "type": "string"
+    },
+    "isAuthenticate": {
+      "type": "boolean"
+    },
+    "totalCoursesCount": {
+      "type": "number"
+    },
+    "draftCoursesCount": {
+      "type": "number"
+    },
+    "liveCoursesCount": {
+      "type": "number"
+    },
+    "searchTags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "serviceRegistryDetails": {
+      "type": "object"
+    },
+    "documentUploadedDate": {
+      "type": "string"
+    },
+    "overAllLimit": {
+      "type": "number",
+      "minimum": 0
+    },
+    "isUserWiseLimitEnabled": {
+      "type": "boolean"
+    },
+    "userWiseLimit": {
+      "type": "number",
+      "minimum": 0
+    },
+    "isConcurrentLimitEnabled": {
+      "type": "boolean"
+    },
+    "concurrentLimit": {
+      "type": "number",
+      "minimum": 0
+    },
+    "licenseType": {
+      "type": "string",
+      "enum": [
+        "User",
+        "Course"
+      ]
+    },
+    "licenseConsumedCount": {
+      "type": "number",
+      "minimum": 0
+    },
+    "addKarmaPointEnabled": {
+      "type": "boolean"
+    },
+    "karmaPoints": {
+      "type": "number",
+      "minimum": 0
+    },
+    "internalOrgId": {
+      "type": "string"
+    },
+    "providerType": {
+      "type": "string",
+      "enum": [
+        "external",
+        "internal"
+      ]
+    },
+    "isTrainingInstitution": {
+      "type": "boolean"
+    },
+    "karmaPointsExemptionEnabled": {
+      "type": "boolean"
+    },
+    "karmaPointsExemption": {
+      "type": "object",
+      "properties": {
+        "group": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "karmaCoinMultiplier": {
+      "type": "number",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "contentPartnerName",
+    "websiteUrl",
+    "link",
+    "description"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "isUserWiseLimitEnabled": {
+            "const": true
+          }
+        },
+        "required": [
+          "isUserWiseLimitEnabled"
+        ]
+      },
+      "then": {
+        "required": [
+          "userWiseLimit"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "isConcurrentLimitEnabled": {
+            "const": true
+          }
+        },
+        "required": [
+          "isConcurrentLimitEnabled"
+        ]
+      },
+      "then": {
+        "required": [
+          "concurrentLimit"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "addKarmaPointEnabled": {
+            "const": true
+          }
+        },
+        "required": [
+          "addKarmaPointEnabled"
+        ]
+      },
+      "then": {
+        "required": [
+          "karmaPoints"
+        ]
+      }
+    }
+  ]
+}

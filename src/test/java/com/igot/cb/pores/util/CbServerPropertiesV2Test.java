@@ -40,6 +40,7 @@ class CbServerPropertiesV2Test {
         CbServerProperties properties = new CbServerProperties();
 
         properties.setContentPartnerV2ValidationSchemaPath("/schema.json");
+        properties.setContentPartnerV2CreateValidationSchemaPath("/create-schema.json");
         properties.setLtiVersion("1.3");
         properties.setLtiToolIssuer("https://issuer.example.com");
         properties.setLtiClientId("client");
@@ -47,6 +48,7 @@ class CbServerPropertiesV2Test {
         properties.setContentPartnerSearchCacheKey("cache-key");
 
         assertEquals("/schema.json", properties.getContentPartnerV2ValidationSchemaPath());
+        assertEquals("/create-schema.json", properties.getContentPartnerV2CreateValidationSchemaPath());
         assertEquals("1.3", properties.getLtiVersion());
         assertEquals("https://issuer.example.com", properties.getLtiToolIssuer());
         assertEquals("client", properties.getLtiClientId());
@@ -68,7 +70,8 @@ class CbServerPropertiesV2Test {
     @Test
     void configuredPropertiesOverrideTheDefaults() throws NoSuchFieldException {
         MockEnvironment environment = new MockEnvironment()
-                .withProperty("content.partner.v2.validation.schema.path", "/custom.json")
+                .withProperty("content.partner.v2.update.validation.schema.path", "/custom.json")
+                .withProperty("content.partner.v2.create.validation.schema.path", "/custom-create.json")
                 .withProperty("lti.version", "1.4")
                 .withProperty("lti.tool.issuer", "https://issuer.example.com")
                 .withProperty("lti.client.id", "client-1")
@@ -76,6 +79,7 @@ class CbServerPropertiesV2Test {
                 .withProperty("content.partner.search.cache.key", "other-key");
 
         assertEquals("/custom.json", resolve("contentPartnerV2ValidationSchemaPath", environment));
+        assertEquals("/custom-create.json", resolve("contentPartnerV2CreateValidationSchemaPath", environment));
         assertEquals("1.4", resolve("ltiVersion", environment));
         assertEquals("https://issuer.example.com", resolve("ltiToolIssuer", environment));
         assertEquals("client-1", resolve("ltiClientId", environment));
@@ -85,15 +89,20 @@ class CbServerPropertiesV2Test {
 
     @Test
     void schemaPathPropertyHasNoDefaultSoItMustBeConfigured() throws NoSuchFieldException {
-        assertEquals("${content.partner.v2.validation.schema.path}", valueExpression("contentPartnerV2ValidationSchemaPath"));
+        assertEquals("${content.partner.v2.update.validation.schema.path}", valueExpression("contentPartnerV2ValidationSchemaPath"));
+        assertEquals("${content.partner.v2.create.validation.schema.path}", valueExpression("contentPartnerV2CreateValidationSchemaPath"));
     }
 
     @Test
-    void applicationPropertiesPointToAnExistingV2Schema() throws IOException {
-        String schemaPath = applicationProperties().getProperty("content.partner.v2.validation.schema.path");
+    void applicationPropertiesPointToExistingV2Schemas() throws IOException {
+        Properties properties = applicationProperties();
 
-        assertNotNull(schemaPath);
-        assertNotNull(getClass().getResource(schemaPath), "V2 schema not found on classpath: " + schemaPath);
+        for (String key : new String[]{"content.partner.v2.update.validation.schema.path",
+                "content.partner.v2.create.validation.schema.path"}) {
+            String schemaPath = properties.getProperty(key);
+            assertNotNull(schemaPath, key + " is not configured");
+            assertNotNull(getClass().getResource(schemaPath), "Schema not found on classpath: " + schemaPath);
+        }
     }
 
     @Test

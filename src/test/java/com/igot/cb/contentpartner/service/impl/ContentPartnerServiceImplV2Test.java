@@ -24,7 +24,6 @@ import org.springframework.http.HttpStatus;
 
 import java.security.SecureRandom;
 import java.sql.Timestamp;
-import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -34,7 +33,8 @@ import static org.mockito.Mockito.*;
 @ExtendWith(MockitoExtension.class)
 class ContentPartnerServiceImplV2Test {
 
-    private static final String V2_SCHEMA = "/payloadValidation/contentProviderValidationV2.json";
+    private static final String V2_SCHEMA = "/payloadValidation/contentProviderValidationV2Update.json";
+    private static final String V2_CREATE_SCHEMA = "/payloadValidation/contentProviderValidationV2Create.json";
     private static final String ES_PATH = "/EsFieldsmapping/cpEsRequiredFieldsJsonFilePath.json";
     private static final String LTI_VERSION = "1.3";
     private static final String LTI_ISSUER = "https://tool.example.com";
@@ -64,6 +64,7 @@ class ContentPartnerServiceImplV2Test {
         service = new ContentPartnerServiceImplV2(payloadValidation, entityRepository, mapper, esUtilService,
                 cacheService, redisTemplate, cbServerProperties, secureRandom);
         lenient().when(cbServerProperties.getContentPartnerV2ValidationSchemaPath()).thenReturn(V2_SCHEMA);
+        lenient().when(cbServerProperties.getContentPartnerV2CreateValidationSchemaPath()).thenReturn(V2_CREATE_SCHEMA);
         lenient().when(cbServerProperties.getElasticContentJsonPath()).thenReturn(ES_PATH);
         lenient().when(cbServerProperties.getContentPartnerSearchCacheKey()).thenReturn(Constants.JWT_SECRET_KEY);
         lenient().when(cbServerProperties.getLtiVersion()).thenReturn(LTI_VERSION);
@@ -154,28 +155,11 @@ class ContentPartnerServiceImplV2Test {
     // ---------- create ----------
 
     @Test
-    void create_ltiRequestIsPersistedAsSentBecauseEnrichmentHappensOnUpdate() {
-        ObjectNode request = createRequest("Lti Partner");
-        request.put(Constants.PROTOCOL, "LTI");
-        request.set(Constants.LTI_CONFIGURATION, ltiConfig());
-
-        ApiResponse response = service.createOrUpdate(request);
-
-        assertEquals(HttpStatus.OK, response.getResponseCode());
-        ContentPartnerEntity saved = captureSaved();
-        assertEquals("LTI", saved.getData().path(Constants.PROTOCOL).asText());
-        assertEquals(ltiConfig(), saved.getData().path(Constants.LTI_CONFIGURATION));
-        assertTrue(saved.getData().path(Constants.PARTNERCODE).asText().startsWith("IGOT-LTI-"));
-        Map<?, ?> data = (Map<?, ?>) ((Map<?, ?>) response.getResult()).get("data");
-        assertEquals(4, ((Map<?, ?>) data.get(Constants.LTI_CONFIGURATION)).size());
-        verify(cbServerProperties, never()).getLtiClientId();
-    }
-
-    @Test
-    void create_validatesAgainstConfiguredV2Schema() {
+    void create_validatesAgainstTheV2CreateSchema() {
         service.createOrUpdate(createRequest("Lti Partner"));
 
-        verify(payloadValidation).validatePayload(eq(V2_SCHEMA), any(JsonNode.class));
+        verify(payloadValidation).validatePayload(eq(V2_CREATE_SCHEMA), any(JsonNode.class));
+        verify(payloadValidation, never()).validatePayload(eq(V2_SCHEMA), any(JsonNode.class));
     }
 
     @Test
@@ -186,17 +170,6 @@ class ContentPartnerServiceImplV2Test {
         JsonNode data = captureSaved().getData();
         assertFalse(data.has(Constants.PROTOCOL));
         assertFalse(data.has(Constants.LTI_CONFIGURATION));
-    }
-
-    @Test
-    void create_explicitSamlProtocolIsPersisted() {
-        ObjectNode request = createRequest("Saml Partner");
-        request.put(Constants.PROTOCOL, "SAML");
-
-        ApiResponse response = service.createOrUpdate(request);
-
-        assertEquals(HttpStatus.OK, response.getResponseCode());
-        assertEquals("SAML", captureSaved().getData().path(Constants.PROTOCOL).asText());
     }
 
     @Test
@@ -229,7 +202,7 @@ class ContentPartnerServiceImplV2Test {
     }
 
     @Test
-    void create_schemaFailureReturnsReturnsBadRequestAndDoesNotPersist() {
+    void create_schemaFailureReturnsBadRequestAndDoesNotPersist() {
         doThrow(new CustomException("Validation Error", "bad ltiConfiguration", HttpStatus.BAD_REQUEST))
                 .when(payloadValidation).validatePayload(anyString(), any());
 
@@ -379,14 +352,11 @@ class ContentPartnerServiceImplV2Test {
     // ---------- server-managed LTI values ----------
 
     @Test
-    void create_nonLtiRequestsAreNotEnriched() {
-        ObjectNode saml = createRequest("Saml Partner");
-        saml.put(Constants.PROTOCOL, "SAML");
-        service.createOrUpdate(saml);
+    void create_neverAppliesLtiConfiguration() {
+        service.createOrUpdate(createRequest("Lti Partner"));
 
-        JsonNode data = captureSaved().getData();
-        assertFalse(data.has(Constants.LTI_CONFIGURATION));
-        verify(payloadValidation, times(1)).validatePayload(eq(V2_SCHEMA), any(JsonNode.class));
+        assertFalse(captureSaved().getData().has(Constants.LTI_CONFIGURATION));
+        verify(payloadValidation, times(1)).validatePayload(eq(V2_CREATE_SCHEMA), any(JsonNode.class));
         verify(cbServerProperties, never()).getLtiClientId();
     }
 
@@ -469,31 +439,6 @@ class ContentPartnerServiceImplV2Test {
     }
 
     @Test
-    void create_ltiEnrichmentValidatesRequestOnlyOnce() {
-        ObjectNode request = createRequest("Lti Partner");
-        request.put(Constants.PROTOCOL, "LTI");
-        request.set(Constants.LTI_CONFIGURATION, ltiConfig());
-
-        service.createOrUpdate(request);
-
-        verify(payloadValidation, times(1)).validatePayload(eq(V2_SCHEMA), any(JsonNode.class));
-    }
-
-    @Test
-    void create_unrecognisedNonLtiProtocolDoesNotTriggerLtiEnrichment() {
-        ObjectNode request = createRequest("Other Partner");
-        request.put(Constants.PROTOCOL, "OTHER");
-
-        ApiResponse response = service.createOrUpdate(request);
-
-        assertEquals(HttpStatus.OK, response.getResponseCode());
-        JsonNode data = captureSaved().getData();
-        assertEquals("OTHER", data.path(Constants.PROTOCOL).asText());
-        assertFalse(data.has(Constants.LTI_CONFIGURATION));
-        verify(cbServerProperties, never()).getLtiVersion();
-    }
-
-    @Test
     void update_nonLtiRequestDoesNotReadLtiConfiguration() {
         ObjectNode data = createRequest("Partner");
         data.put(Constants.PROTOCOL, "SAML");
@@ -522,15 +467,24 @@ class ContentPartnerServiceImplV2Test {
     }
 
     @Test
-    void realSchema_ltiCreateIsAcceptedAndStoresTheRequestUrls() {
+    void realSchema_createWithoutProtocolIsAccepted() {
+        ApiResponse response = serviceWithRealSchemaValidation().createOrUpdate(realSchemaRequest("Plain Partner"));
+
+        assertEquals(HttpStatus.OK, response.getResponseCode());
+        assertFalse(captureSaved().getData().has(Constants.PROTOCOL));
+    }
+
+    @Test
+    void realSchema_createRejectsProtocolAndLtiConfiguration() {
         ObjectNode request = realSchemaRequest("Lti Partner");
         request.put(Constants.PROTOCOL, "LTI");
         request.set(Constants.LTI_CONFIGURATION, ltiConfig());
 
         ApiResponse response = serviceWithRealSchemaValidation().createOrUpdate(request);
 
-        assertEquals(HttpStatus.OK, response.getResponseCode());
-        assertEquals(ltiConfig(), captureSaved().getData().path(Constants.LTI_CONFIGURATION));
+        assertEquals(HttpStatus.BAD_REQUEST, response.getResponseCode());
+        assertTrue(response.getParams().getErrMsg().contains("$.protocol: is not defined in the schema"));
+        verify(entityRepository, never()).save(any());
     }
 
     @Test
@@ -578,11 +532,11 @@ class ContentPartnerServiceImplV2Test {
     void realSchema_missingLtiEndpointIsRejectedWithoutPersisting() {
         ObjectNode lti = ltiConfig();
         lti.remove("redirectLaunchUrl");
-        ObjectNode request = realSchemaRequest("Lti Partner");
-        request.put(Constants.PROTOCOL, "LTI");
-        request.set(Constants.LTI_CONFIGURATION, lti);
+        ObjectNode data = realSchemaRequest("Partner");
+        data.put(Constants.PROTOCOL, "LTI");
+        data.set(Constants.LTI_CONFIGURATION, lti);
 
-        ApiResponse response = serviceWithRealSchemaValidation().createOrUpdate(request);
+        ApiResponse response = serviceWithRealSchemaValidation().createOrUpdate(updateRequest(data));
 
         assertEquals(HttpStatus.BAD_REQUEST, response.getResponseCode());
         assertEquals(Constants.FAILED, response.getParams().getStatus());
@@ -591,16 +545,15 @@ class ContentPartnerServiceImplV2Test {
     }
 
     @Test
-    void realSchema_samlCreateAndUpdateContinueThroughExistingFlow() {
-        ObjectNode create = realSchemaRequest("Saml Partner");
-        create.put(Constants.PROTOCOL, "SAML");
-        assertEquals(HttpStatus.OK, serviceWithRealSchemaValidation().createOrUpdate(create).getResponseCode());
-
+    void realSchema_samlUpdateContinuesThroughExistingFlow() {
         ObjectNode data = realSchemaRequest("Partner");
         data.put(Constants.PROTOCOL, "SAML");
         when(entityRepository.findById("id-123")).thenReturn(Optional.of(storedPartner(storedLegacyData())));
-        assertEquals(HttpStatus.OK,
-                serviceWithRealSchemaValidation().createOrUpdate(updateRequest(data)).getResponseCode());
+
+        ApiResponse response = serviceWithRealSchemaValidation().createOrUpdate(updateRequest(data));
+
+        assertEquals(HttpStatus.OK, response.getResponseCode());
+        assertEquals("SAML", captureSaved().getData().path(Constants.PROTOCOL).asText());
     }
 
     @Test

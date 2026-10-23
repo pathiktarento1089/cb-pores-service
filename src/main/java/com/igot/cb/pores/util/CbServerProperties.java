@@ -73,8 +73,11 @@ public class CbServerProperties {
   @Value("${partner.code.characters}")
   private String partnerCodeChar;
 
-  @Value("${content.partner.v2.validation.schema.path}")
+  @Value("${content.partner.v2.update.validation.schema.path}")
   private String contentPartnerV2ValidationSchemaPath;
+
+  @Value("${content.partner.v2.create.validation.schema.path}")
+  private String contentPartnerV2CreateValidationSchemaPath;
 
   @Value("${lti.version:1.3}")
   private String ltiVersion;

@@ -13,12 +13,12 @@ import org.springframework.http.HttpStatus;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Runs the real contentProviderValidationV2.json through the real PayloadValidation
+ * Runs the real contentProviderValidationV2Update.json through the real PayloadValidation
  * (the service tests mock PayloadValidation, so they never exercise the schema).
  */
 class ContentPartnerV2SchemaTest {
 
-    private static final String V2_SCHEMA = "/payloadValidation/contentProviderValidationV2.json";
+    private static final String V2_SCHEMA = "/payloadValidation/contentProviderValidationV2Update.json";
     private final ObjectMapper mapper = new ObjectMapper();
     private final PayloadValidation validation = new PayloadValidation();
 

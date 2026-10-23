@@ -113,7 +113,7 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
         } else {
             id = UUID.randomUUID().toString();
             partnerCode = generatePartnerCode(partnerName);
-            payloadValidation.validatePayload(cbServerProperties.getContentPartnerV2ValidationSchemaPath(), partnerDetails);
+            payloadValidation.validatePayload(cbServerProperties.getContentPartnerV2CreateValidationSchemaPath(), partnerDetails);
         }
         Optional<ContentPartnerEntity> existingByName = entityRepository.findByContentPartnerName(partnerName);
         if (existingByName.isPresent()) {
