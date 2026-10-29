@@ -28,7 +28,6 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.util.ObjectUtils;
 
 import java.security.SecureRandom;
 import java.sql.Timestamp;
@@ -101,28 +100,35 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
     public ApiResponse createContentPartner(JsonNode partnerDetails) {
         log.info("ContentPartnerServiceImpl::createContentPartner");
         ApiResponse response = ProjectUtil.createDefaultResponse(Constants.API_PARTNER_CREATE);
-        Timestamp currentTime = new Timestamp(System.currentTimeMillis());
-        log.info("Payload for validation: {}", partnerDetails);
+        payloadValidation.validatePayload(cbServerProperties.getContentPartnerV2CreateValidationSchemaPath(), partnerDetails);
         String partnerName = partnerDetails.path(Constants.CONTENT_PARTNER_NAME).asText();
-        String id;
-        String partnerCode;
-        if (partnerDetails.hasNonNull(Constants.ID)) {
-            id = partnerDetails.path(Constants.ID).asText();
-            partnerCode = partnerDetails.path(Constants.APPLICATION_ID).asText("");
-            payloadValidation.validatePayload(Constants.CONTENT_PARTNER_FILE_JSON, partnerDetails);
-        } else {
-            id = UUID.randomUUID().toString();
-            partnerCode = generatePartnerCode(partnerName);
-            payloadValidation.validatePayload(cbServerProperties.getContentPartnerV2CreateValidationSchemaPath(), partnerDetails);
-        }
-        Optional<ContentPartnerEntity> existingByName = entityRepository.findByContentPartnerName(partnerName);
-        if (existingByName.isPresent()) {
-            response.getParams().setErrMsg(Constants.CONTENT_PARTNER_NAME_ALREADY_PRESENT);
-            response.getParams().setStatus(Constants.FAILED);
-            response.setResponseCode(HttpStatus.BAD_REQUEST);
+        if (entityRepository.findByContentPartnerName(partnerName).isPresent()) {
+            ProjectUtil.errorResponse(response, Constants.CONTENT_PARTNER_NAME_ALREADY_PRESENT, HttpStatus.BAD_REQUEST);
             return response;
         }
+        Timestamp currentTime = new Timestamp(System.currentTimeMillis());
+        String id = UUID.randomUUID().toString();
+        ObjectNode data = buildNewPartnerData(partnerDetails, id, generatePartnerCode(partnerName), currentTime);
+        ContentPartnerEntity contentPartnerEntity = new ContentPartnerEntity();
+        contentPartnerEntity.setId(id);
+        contentPartnerEntity.setCreatedOn(currentTime);
+        contentPartnerEntity.setUpdatedOn(currentTime);
+        contentPartnerEntity.setIsActive(Constants.ACTIVE_STATUS);
+        contentPartnerEntity.setCertificateTemplateUrl(partnerDetails.path(Constants.CERTIFICATE_TEMPLATE_URL).asText(" "));
+        contentPartnerEntity.setData(data);
+        ContentPartnerEntity saveJsonEntity = entityRepository.save(contentPartnerEntity);
+        response.setResult(indexAndCacheNewPartner(saveJsonEntity));
+        response.setResponseCode(HttpStatus.OK);
+        return response;
+    }
+
+    /**
+     * Adds the server-managed values to the validated create request, in place, and returns it.
+     * The same node is persisted as the partner's JSON data.
+     */
+    private ObjectNode buildNewPartnerData(JsonNode partnerDetails, String id, String partnerCode, Timestamp currentTime) {
         ObjectNode node = (ObjectNode) partnerDetails;
+        String currentTimeText = String.valueOf(currentTime);
         node.put(Constants.PARTNERCODE, partnerCode);
         node.put(Constants.ID, id);
         node.put(Constants.IS_ACTIVE, Constants.ACTIVE_STATUS);
@@ -132,57 +138,53 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
         node.put(Constants.OVER_ALL_LIMIT, 0);
         node.put(Constants.USER_WISE_LIMIT_ENABLED, Constants.IN_ACTIVE_STATUS);
         node.put(Constants.CONCURRENT_LIMIT_ENABLED, Constants.IN_ACTIVE_STATUS);
-        // liscenceType is intentionally left unset here - it is configured later via update and,
-        // once set, must not be changed (see updateContentPartner).
         node.put(Constants.LICENCE_CONSUMED_COUNT, 0);
         node.put(Constants.ADD_KARMA_POINT_ENABLED, Constants.IN_ACTIVE_STATUS);
         node.put(Constants.IS_AUTHENTICATE, Constants.IN_ACTIVE_STATUS);
         if (!node.has(Constants.PROVIDER_TIPS)) {
             node.putArray(Constants.PROVIDER_TIPS);
         }
-        node.put(Constants.CREATED_ON, String.valueOf(currentTime));
-        node.put(Constants.UPDATED_ON, String.valueOf(currentTime));
+        node.put(Constants.CREATED_ON, currentTimeText);
+        node.put(Constants.UPDATED_ON, currentTimeText);
         node.put(Constants.DOCUMENT_UPLOADED_DATE, partnerDetails.path(Constants.DOCUMENT_UPLOADED_DATE).asText(""));
         node.put(Constants.PROVIDER_TYPE, Constants.EXTERNAL);
         node.put(Constants.IS_TRAINING_INSTITUTE, Constants.ACTIVE_STATUS_FALSE);
-        node.remove(Constants.APPLICATION_ID);
-        ContentPartnerEntity contentPartnerEntity = new ContentPartnerEntity();
-        contentPartnerEntity.setId(id);
-        contentPartnerEntity.setCreatedOn(currentTime);
-        contentPartnerEntity.setUpdatedOn(currentTime);
-        contentPartnerEntity.setIsActive(Constants.ACTIVE_STATUS);
-        contentPartnerEntity.setCertificateTemplateUrl(partnerDetails.path(Constants.CERTIFICATE_TEMPLATE_URL).asText(" "));
-        addSearchTags(partnerDetails);
-        contentPartnerEntity.setData(partnerDetails);
-        ContentPartnerEntity saveJsonEntity = entityRepository.save(contentPartnerEntity);
+        addSearchTags(node);
+        return node;
+    }
+
+    /**
+     * Indexes the saved partner in Elasticsearch, caches it and clears the search cache, in that order.
+     *
+     * @return the entity-shaped map used both for the cache value and the API response
+     */
+    private Map<String, Object> indexAndCacheNewPartner(ContentPartnerEntity saveJsonEntity) {
         Map<String, Object> map = objectMapper.convertValue(saveJsonEntity.getData(), MAP_TYPE);
-        esUtilService.addDocument(Constants.CONTENT_PROVIDER_INDEX_NAME, Constants.INDEX_TYPE, id, map, cbServerProperties.getElasticContentJsonPath());
+        esUtilService.addDocument(Constants.CONTENT_PROVIDER_INDEX_NAME, Constants.INDEX_TYPE, saveJsonEntity.getId(), map, cbServerProperties.getElasticContentJsonPath());
         Map<String, Object> result = objectMapper.convertValue(saveJsonEntity, MAP_TYPE);
         cacheService.putCache(saveJsonEntity.getId(), result);
         // Clear search-related Redis cache
         clearSearchCache();
         log.info(Constants.CONTENT_PARTNER_CREATED);
-        response.setResult(result);
-        response.setResponseCode(HttpStatus.OK);
-        return response;
+        return result;
     }
 
     private ApiResponse updateContentPartner(JsonNode partnerDetails) {
-        log.info("ContentPartnerServiceImpl::createContentPartner");
+        log.info("ContentPartnerServiceImpl::updateContentPartner");
         ApiResponse response = ProjectUtil.createDefaultResponse(Constants.API_PARTNER_UPDATE);
         JsonNode data = partnerDetails.get(Constants.DATA);
         payloadValidation.validatePayload(cbServerProperties.getContentPartnerV2ValidationSchemaPath(), data);
-        String partnerName = partnerDetails.path(Constants.DATA).get(Constants.CONTENT_PARTNER_NAME).asText();
-        String existingId = partnerDetails.get("id").asText();
+        String partnerName = data.get(Constants.CONTENT_PARTNER_NAME).asText();
+        String existingId = partnerDetails.get(Constants.ID).asText();
         Optional<ContentPartnerEntity> content = entityRepository.findById(existingId);
         if (content.isEmpty()) {
             ProjectUtil.errorResponse(response, Constants.DATA_NOT_PRESENT, HttpStatus.BAD_REQUEST);
             return response;
         }
         ContentPartnerEntity jsonEntity = content.get();
-        String updateError = findUpdateError(partnerName, existingId, data, jsonEntity);
-        if (updateError != null) {
-            ProjectUtil.errorResponse(response, updateError, HttpStatus.BAD_REQUEST);
+        String ruleViolationMessage = checkUpdateRulesAndApplyLtiConfig(partnerName, existingId, data, jsonEntity);
+        if (ruleViolationMessage != null) {
+            ProjectUtil.errorResponse(response, ruleViolationMessage, HttpStatus.BAD_REQUEST);
             return response;
         }
         return saveUpdatedPartner(response, partnerDetails, jsonEntity, existingId);
@@ -190,27 +192,43 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
 
     /**
      * Business checks run before an update is applied, in this order: name uniqueness, licence type
-     * immutability, LTI configuration.
+     * immutability, LTI configuration. For an LTI request this also completes the request's
+     * {@code ltiConfiguration} with the server-managed values (it modifies {@code data} in place).
      *
      * @return an error message for a 400 response, or null when the update may proceed
      */
-    private String findUpdateError(String partnerName, String existingId, JsonNode data, ContentPartnerEntity jsonEntity) {
-        if (entityRepository.findByContentPartnerName(partnerName).filter(entity -> !entity.getId().equals(existingId)).isPresent()) {
+    private String checkUpdateRulesAndApplyLtiConfig(String partnerName, String existingId, JsonNode data, ContentPartnerEntity jsonEntity) {
+        JsonNode existingData = jsonEntity.getData();
+        if (isNameUsedByAnotherPartner(partnerName, existingId, existingData)) {
             return Constants.CONTENT_PARTNER_NAME_ALREADY_PRESENT;
         }
-        if (isLicenceTypeChanged(data, jsonEntity)) {
+        if (isLicenceTypeChanged(data, existingData)) {
             return Constants.LICENCE_TYPE_CANNOT_BE_CHANGED;
         }
         if (isLtiProtocol(data)) {
-            return applyLtiConfiguration(data, jsonEntity.getData());
+            return applyLtiConfiguration(data, existingData);
         }
         log.info("Protocol is {}, skipping LTI configuration enrichment",
                 data.path(Constants.PROTOCOL).asText("not set"));
         return null;
     }
 
-    private boolean isLicenceTypeChanged(JsonNode data, ContentPartnerEntity jsonEntity) {
-        String existingLicenceType = jsonEntity.getData().path(Constants.LICENCE_TYPE).asText(null);
+    /**
+     * The duplicate-name query is skipped only when the stored name is a text value exactly equal to the incoming
+     * name (same comparison as the query: case-sensitive, no trimming). A missing or non-text stored name falls
+     * back to the query, so the duplicate check is never bypassed by accident.
+     */
+    private boolean isNameUsedByAnotherPartner(String partnerName, String existingId, JsonNode existingData) {
+        JsonNode storedName = existingData == null ? null : existingData.get(Constants.CONTENT_PARTNER_NAME);
+        if (storedName != null && storedName.isTextual() && partnerName.equals(storedName.asText())) {
+            return false;
+        }
+        return entityRepository.findByContentPartnerName(partnerName)
+                .filter(entity -> !entity.getId().equals(existingId)).isPresent();
+    }
+
+    private boolean isLicenceTypeChanged(JsonNode data, JsonNode existingData) {
+        String existingLicenceType = existingData.path(Constants.LICENCE_TYPE).asText(null);
         JsonNode incomingLicenceType = data.get(Constants.LICENCE_TYPE);
         return StringUtils.isNotBlank(existingLicenceType) && incomingLicenceType != null && !incomingLicenceType.isNull()
                 && !existingLicenceType.equals(incomingLicenceType.asText());
@@ -221,9 +239,6 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
         String partnerCode = jsonEntity.getData().path(Constants.PARTNERCODE).asText();
         createContentPartnerEntity(jsonEntity, partnerDetails);
         ContentPartnerEntity updateJsonEntity = entityRepository.save(jsonEntity);
-        if (ObjectUtils.isEmpty(updateJsonEntity)) {
-            return response;
-        }
         Map<String, Object> jsonMap = objectMapper.convertValue(updateJsonEntity.getData(), MAP_TYPE);
         esUtilService.updateDocument(Constants.CONTENT_PROVIDER_INDEX_NAME, Constants.INDEX_TYPE, existingId, jsonMap, cbServerProperties.getElasticContentJsonPath());
         Map<String, Object> result = objectMapper.convertValue(updateJsonEntity, MAP_TYPE);
@@ -235,7 +250,7 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
     }
 
     private void clearUpdatedPartnerCaches(Map<String, Object> jsonMap, String previousPartnerCode, String id) {
-        if (jsonMap == null || StringUtils.isBlank((String) jsonMap.get(Constants.PARTNERCODE))) {
+        if (StringUtils.isBlank((String) jsonMap.get(Constants.PARTNERCODE))) {
             return;
         }
         log.info(Constants.CONTENT_PARTNER_UPDATE_CACHE_DELETE, jsonMap.get(Constants.PARTNERCODE));
@@ -388,18 +403,10 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
         jsonEntity.setContentFileValidation(partnerDetails.get(Constants.CONTENT_FILE_VALIDATION));
         jsonEntity.setTransformContentViaApi(partnerDetails.get(Constants.TRANSFORM_CONTENT_VIA_API));
         jsonEntity.setTransformProgressViaApi(partnerDetails.get(Constants.TRANSFORM_PROGRESS_VIA_API));
-        ObjectNode objectNode = (ObjectNode) partnerDetails;
-        objectNode.remove(Constants.TRANSFORM_CONTENT_JSON);
-        objectNode.remove(Constants.TRANSFORM_PROGRESS_JSON);
-        objectNode.remove(Constants.CERTIFICATE_TEMPLATE_URL);
-        objectNode.remove(Constants.ID);
-        objectNode.remove(Constants.CONTENT_FILE_VALIDATION);
-        objectNode.remove(Constants.TRANSFORM_CONTENT_VIA_API);
-        objectNode.remove(Constants.TRANSFORM_PROGRESS_VIA_API);
-        ObjectNode dataNode = (ObjectNode) objectNode.remove(Constants.DATA);
+        // Only the nested data object is persisted as the JSON data; the outer request is not used afterwards.
+        ObjectNode dataNode = (ObjectNode) ((ObjectNode) partnerDetails).remove(Constants.DATA);
         dataNode.set(Constants.CREATED_ON, TextNode.valueOf(String.valueOf(jsonEntity.getCreatedOn())));
         dataNode.set(Constants.UPDATED_ON, TextNode.valueOf(String.valueOf(currentTime)));
-        objectNode.set(Constants.DOCUMENT_UPLOADED_DATE, TextNode.valueOf(partnerDetails.path(Constants.DOCUMENT_UPLOADED_DATE).asText("")));
         dataNode.set(Constants.IS_ACTIVE, BooleanNode.valueOf(Constants.ACTIVE_STATUS));
         updateOtherDetailsWithDefaultValue(dataNode, jsonEntity);
         addSearchTags(dataNode);

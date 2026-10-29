@@ -688,4 +688,211 @@ class ContentPartnerServiceImplV2Test {
         com.auth0.jwt.JWT.require(com.auth0.jwt.algorithms.Algorithm.HMAC256(Constants.JWT_SECRET_KEY))
                 .build().verify(cacheKey.getValue());
     }
+
+    // ---------- create: ordering and unchanged outputs ----------
+
+    @Test
+    void create_invalidPayloadMakesNoRepositoryCalls() {
+        ObjectNode request = mapper.createObjectNode();
+        request.put(Constants.CONTENT_PARTNER_NAME, "Invalid Partner");
+
+        ApiResponse response = serviceWithRealSchemaValidation().createOrUpdate(request);
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getResponseCode());
+        verify(entityRepository, never()).findByPartnerCode(anyString());
+        verify(entityRepository, never()).findByContentPartnerName(anyString());
+        verify(entityRepository, never()).save(any());
+        verifyNoInteractions(esUtilService, cacheService);
+    }
+
+    @Test
+    void realSchema_createRejectsApplicationId() {
+        ObjectNode request = realSchemaRequest("Partner With Application Id");
+        request.put(Constants.APPLICATION_ID, "APP-1");
+
+        ApiResponse response = serviceWithRealSchemaValidation().createOrUpdate(request);
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getResponseCode());
+        assertTrue(response.getParams().getErrMsg().contains("$.applicationId: is not defined in the schema"));
+        verify(entityRepository, never()).save(any());
+    }
+
+    @Test
+    void create_duplicateNameDoesNotGeneratePartnerCode() {
+        when(entityRepository.findByContentPartnerName("Existing Partner"))
+                .thenReturn(Optional.of(storedPartner(storedLegacyData())));
+
+        ApiResponse response = service.createOrUpdate(createRequest("Existing Partner"));
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getResponseCode());
+        assertEquals(Constants.CONTENT_PARTNER_NAME_ALREADY_PRESENT, response.getParams().getErrMsg());
+        assertEquals(Constants.FAILED, response.getParams().getStatus());
+        verify(entityRepository, never()).findByPartnerCode(anyString());
+        verify(entityRepository, never()).save(any());
+    }
+
+    @Test
+    void create_persistsExactServerManagedValuesAndEntityColumns() {
+        ObjectNode request = createRequest("Exact Partner");
+
+        service.createOrUpdate(request);
+
+        ContentPartnerEntity saved = captureSaved();
+        JsonNode data = saved.getData();
+        String timestamp = String.valueOf(saved.getCreatedOn());
+        assertEquals(saved.getId(), data.path(Constants.ID).asText());
+        assertTrue(data.path(Constants.PARTNERCODE).asText().startsWith(Constants.APPLICATION_ID_PREFIX + "EXACT-"));
+        assertTrue(data.path(Constants.IS_ACTIVE).asBoolean());
+        assertEquals(timestamp, data.path(Constants.CREATED_ON).asText());
+        assertEquals(timestamp, data.path(Constants.UPDATED_ON).asText());
+        assertEquals("", data.path(Constants.DOCUMENT_UPLOADED_DATE).asText());
+        assertEquals(Constants.EXTERNAL, data.path(Constants.PROVIDER_TYPE).asText());
+        assertEquals(0, data.path(Constants.PROVIDER_TIPS).size());
+        assertEquals("exact partner", data.path(Constants.SEARCHTAGS).get(0).asText());
+        assertFalse(data.has(Constants.APPLICATION_ID));
+        assertEquals(saved.getCreatedOn(), saved.getUpdatedOn());
+        assertTrue(saved.getIsActive());
+        assertEquals(" ", saved.getCertificateTemplateUrl());
+    }
+
+    @Test
+    void create_sideEffectsRunInOrderAndCacheEqualsResponse() {
+        ApiResponse response = service.createOrUpdate(createRequest("Ordered Partner"));
+
+        org.mockito.InOrder inOrder = inOrder(entityRepository, esUtilService, cacheService, redisTemplate);
+        inOrder.verify(entityRepository).save(any(ContentPartnerEntity.class));
+        inOrder.verify(esUtilService).addDocument(eq(Constants.CONTENT_PROVIDER_INDEX_NAME), eq(Constants.INDEX_TYPE),
+                anyString(), anyMap(), eq(ES_PATH));
+        inOrder.verify(cacheService).putCache(anyString(), any());
+        inOrder.verify(redisTemplate).delete(anyString());
+        String savedId = captureSaved().getId();
+        ArgumentCaptor<Object> cached = ArgumentCaptor.forClass(Object.class);
+        verify(cacheService).putCache(eq(savedId), cached.capture());
+        assertEquals(HttpStatus.OK, response.getResponseCode());
+        assertSame(cached.getValue(), response.getResult());
+    }
+
+    // ---------- update: duplicate-name query is skipped only when the name is unchanged ----------
+
+    private ObjectNode storedDataWithName(String name) {
+        ObjectNode data = storedLegacyData();
+        data.put(Constants.CONTENT_PARTNER_NAME, name);
+        return data;
+    }
+
+    private ContentPartnerEntity partnerOwnedBy(String id) {
+        ContentPartnerEntity other = new ContentPartnerEntity();
+        other.setId(id);
+        return other;
+    }
+
+    @Test
+    void update_unchangedNameSkipsDuplicateNameQuery() {
+        ObjectNode data = createRequest("Partner");
+        data.put("description", "updated description");
+
+        ApiResponse response = update(storedPartner(storedDataWithName("Partner")), data);
+
+        assertEquals(HttpStatus.OK, response.getResponseCode());
+        verify(entityRepository, never()).findByContentPartnerName(anyString());
+        verify(entityRepository).save(any(ContentPartnerEntity.class));
+    }
+
+    @Test
+    void update_changedNameRunsDuplicateNameQuery() {
+        ApiResponse response = update(storedPartner(storedDataWithName("Old Name")), createRequest("New Name"));
+
+        assertEquals(HttpStatus.OK, response.getResponseCode());
+        verify(entityRepository).findByContentPartnerName("New Name");
+        verify(entityRepository).save(any(ContentPartnerEntity.class));
+    }
+
+    @Test
+    void update_changedNameOwnedByAnotherPartnerIsRejected() {
+        when(entityRepository.findByContentPartnerName("Taken Name")).thenReturn(Optional.of(partnerOwnedBy("another-id")));
+
+        ApiResponse response = update(storedPartner(storedDataWithName("Old Name")), createRequest("Taken Name"));
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getResponseCode());
+        assertEquals(Constants.CONTENT_PARTNER_NAME_ALREADY_PRESENT, response.getParams().getErrMsg());
+        assertEquals(Constants.FAILED, response.getParams().getStatus());
+        verify(entityRepository).findByContentPartnerName("Taken Name");
+        verify(entityRepository, never()).save(any());
+    }
+
+    @Test
+    void update_changedNameToUnusedNameSucceeds() {
+        when(entityRepository.findByContentPartnerName("Unused Name")).thenReturn(Optional.empty());
+
+        ApiResponse response = update(storedPartner(storedDataWithName("Old Name")), createRequest("Unused Name"));
+
+        assertEquals(HttpStatus.OK, response.getResponseCode());
+        assertEquals("Unused Name", captureSaved().getData().path(Constants.CONTENT_PARTNER_NAME).asText());
+    }
+
+    @Test
+    void update_nameDifferingOnlyByCaseIsTreatedAsChanged() {
+        when(entityRepository.findByContentPartnerName("partner")).thenReturn(Optional.of(partnerOwnedBy("another-id")));
+
+        ApiResponse response = update(storedPartner(storedDataWithName("Partner")), createRequest("partner"));
+
+        verify(entityRepository).findByContentPartnerName("partner");
+        assertEquals(HttpStatus.BAD_REQUEST, response.getResponseCode());
+        assertEquals(Constants.CONTENT_PARTNER_NAME_ALREADY_PRESENT, response.getParams().getErrMsg());
+    }
+
+    @Test
+    void update_nameDifferingByTrailingSpaceIsTreatedAsChanged() {
+        update(storedPartner(storedDataWithName("Partner")), createRequest("Partner "));
+
+        verify(entityRepository).findByContentPartnerName("Partner ");
+    }
+
+    @Test
+    void update_missingStoredNameStillRunsDuplicateNameQuery() {
+        when(entityRepository.findByContentPartnerName("Partner")).thenReturn(Optional.of(partnerOwnedBy("another-id")));
+
+        ApiResponse response = update(storedPartner(storedLegacyData()), createRequest("Partner"));
+
+        verify(entityRepository).findByContentPartnerName("Partner");
+        assertEquals(HttpStatus.BAD_REQUEST, response.getResponseCode());
+        assertEquals(Constants.CONTENT_PARTNER_NAME_ALREADY_PRESENT, response.getParams().getErrMsg());
+    }
+
+    @Test
+    void update_nonTextStoredNameStillRunsDuplicateNameQuery() {
+        ObjectNode stored = storedLegacyData();
+        stored.put(Constants.CONTENT_PARTNER_NAME, 123);
+
+        update(storedPartner(stored), createRequest("123"));
+
+        verify(entityRepository).findByContentPartnerName("123");
+    }
+
+    @Test
+    void update_unchangedNameStillAppliesLicenceCheck() {
+        ObjectNode stored = storedDataWithName("Partner");
+        stored.put(Constants.LICENCE_TYPE, Constants.LICENCE_TYPE_USER);
+        ObjectNode data = createRequest("Partner");
+        data.put(Constants.LICENCE_TYPE, Constants.LICENCE_TYPE_COURSE);
+
+        ApiResponse response = update(storedPartner(stored), data);
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getResponseCode());
+        assertEquals(Constants.LICENCE_TYPE_CANNOT_BE_CHANGED, response.getParams().getErrMsg());
+        verify(entityRepository, never()).findByContentPartnerName(anyString());
+    }
+
+    @Test
+    void update_unchangedNameStillAppliesLtiConfiguration() {
+        ObjectNode data = createRequest("Partner");
+        data.put(Constants.PROTOCOL, "LTI");
+        data.set(Constants.LTI_CONFIGURATION, ltiConfig());
+
+        ApiResponse response = update(storedPartner(storedDataWithName("Partner")), data);
+
+        assertEquals(HttpStatus.OK, response.getResponseCode());
+        assertEquals(completedLtiConfig(), captureSaved().getData().path(Constants.LTI_CONFIGURATION));
+        verify(entityRepository, never()).findByContentPartnerName(anyString());
+    }
 }
