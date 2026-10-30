@@ -903,6 +903,144 @@ class ContentPartnerServiceImplV2Test {
         verify(entityRepository, never()).findByContentPartnerName(anyString());
     }
 
+    // ---------- partnerCode immutability on update ----------
+
+    private void verifyNothingChangedAfterRejectedUpdate(ContentPartnerEntity stored, String originalCode) {
+        verify(entityRepository, never()).save(any(ContentPartnerEntity.class));
+        verifyNoInteractions(esUtilService, cacheService, redisTemplate);
+        assertEquals(originalCode, stored.getData().path(Constants.PARTNERCODE).asText());
+    }
+
+    @Test
+    void update_samePartnerCodeIsAccepted() {
+        ObjectNode data = createRequest("Partner");
+        data.put(Constants.PARTNERCODE, "IGOT-OLD-ABCDE");
+
+        ApiResponse response = update(storedPartner(storedDataWithName("Partner")), data);
+
+        assertEquals(HttpStatus.OK, response.getResponseCode());
+        assertEquals("IGOT-OLD-ABCDE", captureSaved().getData().path(Constants.PARTNERCODE).asText());
+    }
+
+    @Test
+    void update_differentPartnerCodeIsRejectedAndNothingIsTouched() {
+        ContentPartnerEntity stored = storedPartner(storedDataWithName("Partner"));
+        ObjectNode data = createRequest("Partner");
+        data.put(Constants.PARTNERCODE, "IGOT-TESTINGLTI-OGDTD");
+
+        ApiResponse response = update(stored, data);
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getResponseCode());
+        assertEquals(Constants.FAILED, response.getParams().getStatus());
+        assertEquals("Content partnerCode cannot be changed", response.getParams().getErrMsg());
+        verifyNothingChangedAfterRejectedUpdate(stored, "IGOT-OLD-ABCDE");
+    }
+
+    @Test
+    void update_partnerCodeComparisonIsCaseSensitiveAndExact() {
+        for (String attempt : new String[]{"igot-old-abcde", "IGOT-OLD-ABCDE ", ""}) {
+            ContentPartnerEntity stored = storedPartner(storedDataWithName("Partner"));
+            ObjectNode data = createRequest("Partner");
+            data.put(Constants.PARTNERCODE, attempt);
+
+            ApiResponse response = update(stored, data);
+
+            assertEquals(HttpStatus.BAD_REQUEST, response.getResponseCode(), "attempt: '" + attempt + "'");
+            assertEquals(Constants.CONTENT_PARTNER_CODE_CANNOT_BE_CHANGED, response.getParams().getErrMsg());
+        }
+        verify(entityRepository, never()).save(any(ContentPartnerEntity.class));
+    }
+
+    @Test
+    void update_omittedPartnerCodeKeepsTheExistingCode() {
+        ApiResponse response = update(storedPartner(storedDataWithName("Partner")), createRequest("Partner"));
+
+        assertEquals(HttpStatus.OK, response.getResponseCode());
+        assertEquals("IGOT-OLD-ABCDE", captureSaved().getData().path(Constants.PARTNERCODE).asText());
+    }
+
+    @Test
+    void update_nullStoredPartnerCodeFollowsLegacyFlow() {
+        ObjectNode stored = storedDataWithName("Partner");
+        stored.remove(Constants.PARTNERCODE);
+        ObjectNode data = createRequest("Partner");
+        data.put(Constants.PARTNERCODE, "IGOT-NEW-ABCDE");
+
+        ApiResponse response = update(storedPartner(stored), data);
+
+        assertEquals(HttpStatus.OK, response.getResponseCode());
+        assertEquals("IGOT-NEW-ABCDE", captureSaved().getData().path(Constants.PARTNERCODE).asText());
+    }
+
+    @Test
+    void update_blankStoredPartnerCodeFollowsLegacyFlow() {
+        ObjectNode stored = storedDataWithName("Partner");
+        stored.put(Constants.PARTNERCODE, "  ");
+        ObjectNode data = createRequest("Partner");
+        data.put(Constants.PARTNERCODE, "IGOT-NEW-ABCDE");
+
+        ApiResponse response = update(storedPartner(stored), data);
+
+        assertEquals(HttpStatus.OK, response.getResponseCode());
+        assertEquals("IGOT-NEW-ABCDE", captureSaved().getData().path(Constants.PARTNERCODE).asText());
+    }
+
+    @Test
+    void update_differentPartnerCodeIsRejectedEvenWhenEverythingElseIsValid() {
+        ObjectNode stored = storedLtiData();
+        stored.put(Constants.CONTENT_PARTNER_NAME, "Partner");
+        stored.put(Constants.LICENCE_TYPE, Constants.LICENCE_TYPE_USER);
+        ObjectNode data = createRequest("Partner");
+        data.put(Constants.PROTOCOL, "LTI");
+        data.set(Constants.LTI_CONFIGURATION, ltiConfig());
+        data.put(Constants.LICENCE_TYPE, Constants.LICENCE_TYPE_USER);
+        data.put(Constants.PARTNERCODE, "IGOT-OTHER-ZZZZZ");
+        ContentPartnerEntity entity = storedPartner(stored);
+
+        ApiResponse response = update(entity, data);
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getResponseCode());
+        assertEquals(Constants.CONTENT_PARTNER_CODE_CANNOT_BE_CHANGED, response.getParams().getErrMsg());
+        verifyNothingChangedAfterRejectedUpdate(entity, "IGOT-OLD-ABCDE");
+    }
+
+    @Test
+    void update_existingRulesKeepPrecedenceOverPartnerCodeCheck() {
+        // duplicate name wins
+        ObjectNode other = createRequest("Taken Name");
+        other.put(Constants.PARTNERCODE, "IGOT-DIFF-AAAAA");
+        when(entityRepository.findByContentPartnerName("Taken Name")).thenReturn(Optional.of(partnerOwnedBy("other-id")));
+        assertEquals(Constants.CONTENT_PARTNER_NAME_ALREADY_PRESENT,
+                update(storedPartner(storedDataWithName("Partner")), other).getParams().getErrMsg());
+
+        // licence change wins
+        ObjectNode stored = storedDataWithName("Partner");
+        stored.put(Constants.LICENCE_TYPE, Constants.LICENCE_TYPE_USER);
+        ObjectNode licence = createRequest("Partner");
+        licence.put(Constants.LICENCE_TYPE, Constants.LICENCE_TYPE_COURSE);
+        licence.put(Constants.PARTNERCODE, "IGOT-DIFF-AAAAA");
+        assertEquals(Constants.LICENCE_TYPE_CANNOT_BE_CHANGED,
+                update(storedPartner(stored), licence).getParams().getErrMsg());
+
+        // missing LTI configuration wins
+        ObjectNode lti = createRequest("Partner");
+        lti.put(Constants.PROTOCOL, "LTI");
+        lti.put(Constants.PARTNERCODE, "IGOT-DIFF-AAAAA");
+        assertEquals(Constants.ERR_LTI_CONFIGURATION_REQUIRED,
+                update(storedPartner(storedDataWithName("Partner")), lti).getParams().getErrMsg());
+        verify(entityRepository, never()).save(any(ContentPartnerEntity.class));
+    }
+
+    @Test
+    void update_partnerCodeCheckMakesNoExtraRepositoryQuery() {
+        ObjectNode data = createRequest("Partner");
+        data.put(Constants.PARTNERCODE, "IGOT-DIFF-AAAAA");
+
+        update(storedPartner(storedDataWithName("Partner")), data);
+
+        verify(entityRepository, never()).findByPartnerCode(anyString());
+    }
+
     // ---------- partner code generation ----------
 
     @Test

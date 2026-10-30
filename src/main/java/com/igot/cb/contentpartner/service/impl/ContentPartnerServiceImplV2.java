@@ -185,7 +185,7 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
 
     /**
      * Business checks run before an update is applied, in this order: name uniqueness, licence type
-     * immutability, LTI configuration. For an LTI request this also completes the request's
+     * immutability, LTI configuration, partner code immutability. For an LTI request this also completes the request's
      * {@code ltiConfiguration} with the server-managed values (it modifies {@code data} in place).
      *
      * @return an error message for a 400 response, or null when the update may proceed
@@ -199,11 +199,26 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
             return Constants.LICENCE_TYPE_CANNOT_BE_CHANGED;
         }
         if (isLtiProtocol(data)) {
-            return applyLtiConfiguration(data, existingData);
+            String ltiViolation = applyLtiConfiguration(data, existingData);
+            if (ltiViolation != null) {
+                return ltiViolation;
+            }
+        } else {
+            log.info("Protocol is {}, skipping LTI configuration enrichment",
+                    data.path(Constants.PROTOCOL).asText("not set"));
         }
-        log.info("Protocol is {}, skipping LTI configuration enrichment",
-                data.path(Constants.PROTOCOL).asText("not set"));
-        return null;
+        return isPartnerCodeChanged(data, existingData) ? Constants.CONTENT_PARTNER_CODE_CANNOT_BE_CHANGED : null;
+    }
+
+    /**
+     * A request that omits partnerCode keeps the stored one (missing fields are copied from the stored data). A
+     * request that carries one must equal the stored value exactly (case-sensitive). A stored value that is
+     * missing or blank (legacy data) imposes no restriction.
+     */
+    private boolean isPartnerCodeChanged(JsonNode data, JsonNode existingData) {
+        String storedPartnerCode = existingData.path(Constants.PARTNERCODE).asText(null);
+        return StringUtils.isNotBlank(storedPartnerCode) && data.hasNonNull(Constants.PARTNERCODE)
+                && !storedPartnerCode.equals(data.get(Constants.PARTNERCODE).asText());
     }
 
     /**

@@ -371,6 +371,7 @@ public class Constants {
     public static final String CONTENT_PARTNER_CODE_AND_NAME_ALREADY_PRESENT = "Content partnerCode and partnerName already present in DB";
     public static final String CONTENT_PARTNER_NAME_ALREADY_PRESENT = "Content partnerName already present in DB";
     public static final String CONTENT_PARTNER_CODE_ALREADY_PRESENT = "Content partnerCode already present in DB";
+    public static final String CONTENT_PARTNER_CODE_CANNOT_BE_CHANGED = "Content partnerCode cannot be changed";
     public static final String PROVIDER_TIPS = "providerTips";
     public static final String DATA_NOT_PRESENT = "Data not present in DB With given ID";
     public static final String TRANSFORM_CONTENT_JSON ="trasformContentJson";
