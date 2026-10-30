@@ -7,9 +7,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.BooleanNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.fasterxml.jackson.databind.node.TextNode;
 import com.igot.cb.contentpartner.entity.ContentPartnerEntity;
 import com.igot.cb.contentpartner.repository.ContentPartnerRepository;
 import com.igot.cb.contentpartner.service.ContentPartnerServiceV2;
@@ -39,10 +37,6 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
 
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
     };
-    private static final String LTI_VERSION = "ltiVersion";
-    private static final String LTI_TOOL_ISSUER = "toolIssuer";
-    private static final String LTI_CLIENT_ID = "clientId";
-    private static final String LTI_DEPLOYMENT_ID = "deploymentId";
 
     private final PayloadValidation payloadValidation;
     private final ContentPartnerRepository entityRepository;
@@ -85,14 +79,11 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
             }
             return response;
         } catch (CustomException e) {
-            response.getParams().setErrMsg(e.getMessage());
-            response.getParams().setStatus(Constants.FAILED);
-            response.setResponseCode(e.getHttpStatusCode() != null ? e.getHttpStatusCode() : HttpStatus.BAD_REQUEST);
+            ProjectUtil.errorResponse(response, e.getMessage(),
+                    e.getHttpStatusCode() != null ? e.getHttpStatusCode() : HttpStatus.BAD_REQUEST);
             return response;
         } catch (Exception e) {
-            response.getParams().setErrMsg(e.getMessage());
-            response.getParams().setStatus(Constants.FAILED);
-            response.setResponseCode(HttpStatus.INTERNAL_SERVER_ERROR);
+            ProjectUtil.errorResponse(response, e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
             return response;
         }
     }
@@ -229,9 +220,8 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
 
     private boolean isLicenceTypeChanged(JsonNode data, JsonNode existingData) {
         String existingLicenceType = existingData.path(Constants.LICENCE_TYPE).asText(null);
-        JsonNode incomingLicenceType = data.get(Constants.LICENCE_TYPE);
-        return StringUtils.isNotBlank(existingLicenceType) && incomingLicenceType != null && !incomingLicenceType.isNull()
-                && !existingLicenceType.equals(incomingLicenceType.asText());
+        return StringUtils.isNotBlank(existingLicenceType) && data.hasNonNull(Constants.LICENCE_TYPE)
+                && !existingLicenceType.equals(data.get(Constants.LICENCE_TYPE).asText());
     }
 
     private ApiResponse saveUpdatedPartner(ApiResponse response, JsonNode partnerDetails,
@@ -279,10 +269,10 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
                     ? null : Constants.ERR_LTI_CONFIGURATION_REQUIRED;
         }
         ObjectNode ltiConfiguration = (ObjectNode) requested;
-        ltiConfiguration.set(LTI_VERSION, TextNode.valueOf(requiredLtiSetting(cbServerProperties.getLtiVersion(), "lti.version")));
-        ltiConfiguration.set(LTI_TOOL_ISSUER, TextNode.valueOf(requiredLtiSetting(cbServerProperties.getLtiToolIssuer(), "lti.tool.issuer")));
-        ltiConfiguration.set(LTI_CLIENT_ID, TextNode.valueOf(requiredLtiSetting(cbServerProperties.getLtiClientId(), "lti.client.id")));
-        ltiConfiguration.set(LTI_DEPLOYMENT_ID, TextNode.valueOf(requiredLtiSetting(cbServerProperties.getLtiDeploymentId(), "lti.deployment.id")));
+        ltiConfiguration.put(Constants.LTI_VERSION, requiredLtiSetting(cbServerProperties.getLtiVersion(), "lti.version"));
+        ltiConfiguration.put(Constants.LTI_TOOL_ISSUER, requiredLtiSetting(cbServerProperties.getLtiToolIssuer(), "lti.tool.issuer"));
+        ltiConfiguration.put(Constants.LTI_CLIENT_ID, requiredLtiSetting(cbServerProperties.getLtiClientId(), "lti.client.id"));
+        ltiConfiguration.put(Constants.LTI_DEPLOYMENT_ID, requiredLtiSetting(cbServerProperties.getLtiDeploymentId(), "lti.deployment.id"));
         return null;
     }
 
@@ -298,19 +288,30 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
     }
 
     private String generatePartnerCode(String partnerName) {
-        String firstWord = partnerName.trim().split("\\s+")[0].toUpperCase().replaceAll("[^A-Z]", "");
-        String partnerCode;
-        do {
-            StringBuilder randomCode = new StringBuilder(5);
-            for (int i = 0; i < 5; i++) {
-                randomCode.append(cbServerProperties.getPartnerCodeChar().charAt(secureRandom.nextInt(cbServerProperties.getPartnerCodeChar().length())));
+        String firstWord = partnerName.trim().split("\\s+")[0].toUpperCase(Locale.ROOT).replaceAll("[^A-Z]", "");
+        String characters = cbServerProperties.getPartnerCodeChar();
+        int maxAttempts = cbServerProperties.getPartnerCodeMaxAttempts();
+        int codeLength = cbServerProperties.getPartnerCodeLength();
+        if (StringUtils.isBlank(characters) || maxAttempts < 1 || codeLength < 1) {
+            throw new IllegalStateException("Partner code generation is not configured");
+        }
+        if (firstWord.isEmpty()) {
+            throw new IllegalStateException("Unable to derive a partner code prefix from the partner name");
+        }
+        for (int attempt = 0; attempt < maxAttempts; attempt++) {
+            StringBuilder randomCode = new StringBuilder(codeLength);
+            for (int i = 0; i < codeLength; i++) {
+                randomCode.append(characters.charAt(secureRandom.nextInt(characters.length())));
             }
-            partnerCode = Constants.APPLICATION_ID_PREFIX + firstWord + "-" + randomCode;
-        } while (entityRepository.findByPartnerCode(partnerCode).isPresent());
-        return partnerCode;
+            String partnerCode = Constants.APPLICATION_ID_PREFIX + firstWord + "-" + randomCode;
+            if (entityRepository.findByPartnerCode(partnerCode).isEmpty()) {
+                return partnerCode;
+            }
+        }
+        throw new IllegalStateException("Unable to generate a unique partner code");
     }
 
-    private JsonNode addSearchTags(JsonNode formattedData) {
+    private void addSearchTags(ObjectNode formattedData) {
         List<String> searchTags = new ArrayList<>();
 
         // Preserve existing searchTags if present
@@ -324,16 +325,15 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
         }
 
         // Add contentPartnerName to searchTags
-        if (formattedData.has("contentPartnerName")) {
-            String partnerName = formattedData.get("contentPartnerName").textValue();
+        if (formattedData.has(Constants.CONTENT_PARTNER_NAME)) {
+            String partnerName = formattedData.get(Constants.CONTENT_PARTNER_NAME).textValue();
             if (StringUtils.isNotBlank(partnerName) && !searchTags.contains(partnerName.toLowerCase())) {
                 searchTags.add(partnerName.toLowerCase());
             }
         }
 
         ArrayNode searchTagsArray = objectMapper.valueToTree(searchTags);
-        ((ObjectNode) formattedData).set("searchTags", searchTagsArray);
-        return formattedData;
+        formattedData.set(Constants.SEARCHTAGS, searchTagsArray);
     }
 
     /**
@@ -405,9 +405,9 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
         jsonEntity.setTransformProgressViaApi(partnerDetails.get(Constants.TRANSFORM_PROGRESS_VIA_API));
         // Only the nested data object is persisted as the JSON data; the outer request is not used afterwards.
         ObjectNode dataNode = (ObjectNode) ((ObjectNode) partnerDetails).remove(Constants.DATA);
-        dataNode.set(Constants.CREATED_ON, TextNode.valueOf(String.valueOf(jsonEntity.getCreatedOn())));
-        dataNode.set(Constants.UPDATED_ON, TextNode.valueOf(String.valueOf(currentTime)));
-        dataNode.set(Constants.IS_ACTIVE, BooleanNode.valueOf(Constants.ACTIVE_STATUS));
+        dataNode.put(Constants.CREATED_ON, String.valueOf(jsonEntity.getCreatedOn()));
+        dataNode.put(Constants.UPDATED_ON, String.valueOf(currentTime));
+        dataNode.put(Constants.IS_ACTIVE, Constants.ACTIVE_STATUS);
         updateOtherDetailsWithDefaultValue(dataNode, jsonEntity);
         addSearchTags(dataNode);
         jsonEntity.setData(dataNode);

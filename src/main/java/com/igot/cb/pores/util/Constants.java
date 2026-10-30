@@ -540,6 +540,10 @@ public class Constants {
     public static final String REQUIRED_KARMA_COINS = "requiredKarmaCoins";
     public static final String KARMA_COIN_MULTIPLIER = "karmaCoinMultiplier";
     public static final String COMPATIBILITY_LEVEL = "compatibilityLevel";
+    public static final String LTI_VERSION = "ltiVersion";
+    public static final String LTI_TOOL_ISSUER = "toolIssuer";
+    public static final String LTI_CLIENT_ID = "clientId";
+    public static final String LTI_DEPLOYMENT_ID = "deploymentId";
 
     private Constants() {
     }

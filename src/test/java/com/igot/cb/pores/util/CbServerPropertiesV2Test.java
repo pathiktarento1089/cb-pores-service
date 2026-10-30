@@ -112,4 +112,16 @@ class CbServerPropertiesV2Test {
         assertEquals(Constants.JWT_SECRET_KEY, properties.getProperty("content.partner.search.cache.key"));
         assertEquals("1.3", properties.getProperty("lti.version"));
     }
+
+    @Test
+    void partnerCodeGenerationSettingsDefaultToTwentyAttemptsAndFiveCharacters() throws NoSuchFieldException {
+        MockEnvironment empty = new MockEnvironment();
+        assertEquals("20", resolve("partnerCodeMaxAttempts", empty));
+        assertEquals("5", resolve("partnerCodeLength", empty));
+
+        MockEnvironment overridden = new MockEnvironment()
+                .withProperty("partner.code.max.attempts", "30").withProperty("partner.code.length", "6");
+        assertEquals("30", resolve("partnerCodeMaxAttempts", overridden));
+        assertEquals("6", resolve("partnerCodeLength", overridden));
+    }
 }

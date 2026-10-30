@@ -21,6 +21,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.http.HttpStatus;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.security.SecureRandom;
 import java.sql.Timestamp;
@@ -72,6 +73,8 @@ class ContentPartnerServiceImplV2Test {
         lenient().when(cbServerProperties.getLtiClientId()).thenReturn(LTI_CLIENT_ID);
         lenient().when(cbServerProperties.getLtiDeploymentId()).thenReturn(LTI_DEPLOYMENT_ID);
         lenient().when(cbServerProperties.getPartnerCodeChar()).thenReturn("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+        lenient().when(cbServerProperties.getPartnerCodeMaxAttempts()).thenReturn(20);
+        lenient().when(cbServerProperties.getPartnerCodeLength()).thenReturn(5);
         lenient().when(secureRandom.nextInt(anyInt())).thenReturn(0);
         lenient().when(entityRepository.findByPartnerCode(anyString())).thenReturn(Optional.empty());
         lenient().when(entityRepository.findByContentPartnerName(anyString())).thenReturn(Optional.empty());
@@ -654,9 +657,11 @@ class ContentPartnerServiceImplV2Test {
 
     @Test
     void searchTags_blankNameIsNotAdded() {
-        ObjectNode request = createRequest("   ");
+        ObjectNode data = createRequest("   ");
 
-        assertEquals(0, savedSearchTags(request).size());
+        ReflectionTestUtils.invokeMethod(service, "addSearchTags", data);
+
+        assertEquals(0, data.path(Constants.SEARCHTAGS).size());
     }
 
     @Test
@@ -672,10 +677,12 @@ class ContentPartnerServiceImplV2Test {
 
     @Test
     void searchTags_missingNameAddsNothing() {
-        ObjectNode request = mapper.createObjectNode();
-        request.put("websiteUrl", "https://example.com");
+        ObjectNode data = mapper.createObjectNode();
+        data.put("websiteUrl", "https://example.com");
 
-        assertEquals(0, savedSearchTags(request).size());
+        ReflectionTestUtils.invokeMethod(service, "addSearchTags", data);
+
+        assertEquals(0, data.path(Constants.SEARCHTAGS).size());
     }
 
     @Test
@@ -894,5 +901,114 @@ class ContentPartnerServiceImplV2Test {
         assertEquals(HttpStatus.OK, response.getResponseCode());
         assertEquals(completedLtiConfig(), captureSaved().getData().path(Constants.LTI_CONFIGURATION));
         verify(entityRepository, never()).findByContentPartnerName(anyString());
+    }
+
+    // ---------- partner code generation ----------
+
+    @Test
+    void create_partnerCodeHasTheExistingFormat() {
+        ApiResponse response = service.createOrUpdate(createRequest("  acme   corp"));
+
+        assertEquals(HttpStatus.OK, response.getResponseCode());
+        String code = captureSaved().getData().path(Constants.PARTNERCODE).asText();
+        assertEquals("IGOT-ACME-AAAAA", code);
+        assertTrue(code.matches("^IGOT-[A-Z]+-[A-Z0-9]{5}$"));
+    }
+
+    @Test
+    void create_partnerCodeUsesLettersOnlyOfTheFirstWord() {
+        service.createOrUpdate(createRequest("e-Learning Hub"));
+
+        assertEquals("IGOT-ELEARNING-AAAAA", captureSaved().getData().path(Constants.PARTNERCODE).asText());
+    }
+
+    @Test
+    void create_existingPartnerCodeIsSkippedAndNextCandidateUsed() {
+        when(secureRandom.nextInt(anyInt())).thenReturn(0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2);
+        when(entityRepository.findByPartnerCode("IGOT-ACME-AAAAA")).thenReturn(Optional.of(new ContentPartnerEntity()));
+        when(entityRepository.findByPartnerCode("IGOT-ACME-BBBBB")).thenReturn(Optional.of(new ContentPartnerEntity()));
+
+        ApiResponse response = service.createOrUpdate(createRequest("Acme Corp"));
+
+        assertEquals(HttpStatus.OK, response.getResponseCode());
+        assertEquals("IGOT-ACME-CCCCC", captureSaved().getData().path(Constants.PARTNERCODE).asText());
+        verify(entityRepository, times(3)).findByPartnerCode(anyString());
+    }
+
+    @Test
+    void create_nameWithoutLettersInFirstWordFailsWithoutPersisting() {
+        // The schema already rejects such names; this covers the defensive guard when validation is bypassed.
+        ApiResponse response = service.createOrUpdate(createRequest("123 Academy"));
+
+        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.getResponseCode());
+        assertEquals("Unable to derive a partner code prefix from the partner name", response.getParams().getErrMsg());
+        verify(entityRepository, never()).save(any(ContentPartnerEntity.class));
+        verifyNoInteractions(esUtilService, cacheService);
+    }
+
+    @Test
+    void create_emptyCharacterConfigurationFailsWithoutPersisting() {
+        for (String configured : new String[]{null, "", "   "}) {
+            when(cbServerProperties.getPartnerCodeChar()).thenReturn(configured);
+
+            ApiResponse response = service.createOrUpdate(createRequest("Acme Corp"));
+
+            assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.getResponseCode());
+            assertEquals(Constants.FAILED, response.getParams().getStatus());
+            assertEquals("Partner code generation is not configured", response.getParams().getErrMsg());
+        }
+        verify(entityRepository, never()).findByPartnerCode(anyString());
+        verify(entityRepository, never()).save(any(ContentPartnerEntity.class));
+        verifyNoInteractions(esUtilService, cacheService);
+    }
+
+    @Test
+    void create_partnerCodeLengthIsConfigurable() {
+        when(cbServerProperties.getPartnerCodeLength()).thenReturn(8);
+
+        service.createOrUpdate(createRequest("Acme Corp"));
+
+        assertEquals("IGOT-ACME-AAAAAAAA", captureSaved().getData().path(Constants.PARTNERCODE).asText());
+    }
+
+    @Test
+    void create_maxAttemptsIsConfigurable() {
+        when(cbServerProperties.getPartnerCodeMaxAttempts()).thenReturn(3);
+        when(entityRepository.findByPartnerCode(anyString())).thenReturn(Optional.of(new ContentPartnerEntity()));
+
+        ApiResponse response = service.createOrUpdate(createRequest("Acme Corp"));
+
+        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.getResponseCode());
+        assertEquals("Unable to generate a unique partner code", response.getParams().getErrMsg());
+        verify(entityRepository, times(3)).findByPartnerCode(anyString());
+    }
+
+    @Test
+    void create_nonPositiveAttemptsOrLengthFailsAsNotConfigured() {
+        when(cbServerProperties.getPartnerCodeMaxAttempts()).thenReturn(0);
+        assertEquals("Partner code generation is not configured",
+                service.createOrUpdate(createRequest("Acme Corp")).getParams().getErrMsg());
+
+        when(cbServerProperties.getPartnerCodeMaxAttempts()).thenReturn(20);
+        when(cbServerProperties.getPartnerCodeLength()).thenReturn(0);
+        assertEquals("Partner code generation is not configured",
+                service.createOrUpdate(createRequest("Acme Corp")).getParams().getErrMsg());
+
+        verify(entityRepository, never()).findByPartnerCode(anyString());
+        verify(entityRepository, never()).save(any(ContentPartnerEntity.class));
+    }
+
+    @Test
+    void create_partnerCodeAttemptsAreBoundedAndNothingIsPersistedOrIndexed() {
+        when(entityRepository.findByPartnerCode(anyString())).thenReturn(Optional.of(new ContentPartnerEntity()));
+
+        ApiResponse response = service.createOrUpdate(createRequest("Acme Corp"));
+
+        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.getResponseCode());
+        assertEquals(Constants.FAILED, response.getParams().getStatus());
+        assertEquals("Unable to generate a unique partner code", response.getParams().getErrMsg());
+        verify(entityRepository, times(20)).findByPartnerCode(anyString());
+        verify(entityRepository, never()).save(any(ContentPartnerEntity.class));
+        verifyNoInteractions(esUtilService, cacheService);
     }
 }
