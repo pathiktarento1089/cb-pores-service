@@ -7,7 +7,9 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.BooleanNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.TextNode;
 import com.igot.cb.contentpartner.entity.ContentPartnerEntity;
 import com.igot.cb.contentpartner.repository.ContentPartnerRepository;
 import com.igot.cb.contentpartner.service.ContentPartnerServiceV2;
@@ -269,10 +271,10 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
                     ? null : Constants.ERR_LTI_CONFIGURATION_REQUIRED;
         }
         ObjectNode ltiConfiguration = (ObjectNode) requested;
-        ltiConfiguration.put(Constants.LTI_VERSION, requiredLtiSetting(cbServerProperties.getLtiVersion(), "lti.version"));
-        ltiConfiguration.put(Constants.LTI_TOOL_ISSUER, requiredLtiSetting(cbServerProperties.getLtiToolIssuer(), "lti.tool.issuer"));
-        ltiConfiguration.put(Constants.LTI_CLIENT_ID, requiredLtiSetting(cbServerProperties.getLtiClientId(), "lti.client.id"));
-        ltiConfiguration.put(Constants.LTI_DEPLOYMENT_ID, requiredLtiSetting(cbServerProperties.getLtiDeploymentId(), "lti.deployment.id"));
+        ltiConfiguration.set(Constants.LTI_VERSION, TextNode.valueOf(requiredLtiSetting(cbServerProperties.getLtiVersion(), "lti.version")));
+        ltiConfiguration.set(Constants.LTI_TOOL_ISSUER, TextNode.valueOf(requiredLtiSetting(cbServerProperties.getLtiToolIssuer(), "lti.tool.issuer")));
+        ltiConfiguration.set(Constants.LTI_CLIENT_ID, TextNode.valueOf(requiredLtiSetting(cbServerProperties.getLtiClientId(), "lti.client.id")));
+        ltiConfiguration.set(Constants.LTI_DEPLOYMENT_ID, TextNode.valueOf(requiredLtiSetting(cbServerProperties.getLtiDeploymentId(), "lti.deployment.id")));
         return null;
     }
 
@@ -405,9 +407,9 @@ public class ContentPartnerServiceImplV2 implements ContentPartnerServiceV2 {
         jsonEntity.setTransformProgressViaApi(partnerDetails.get(Constants.TRANSFORM_PROGRESS_VIA_API));
         // Only the nested data object is persisted as the JSON data; the outer request is not used afterwards.
         ObjectNode dataNode = (ObjectNode) ((ObjectNode) partnerDetails).remove(Constants.DATA);
-        dataNode.put(Constants.CREATED_ON, String.valueOf(jsonEntity.getCreatedOn()));
-        dataNode.put(Constants.UPDATED_ON, String.valueOf(currentTime));
-        dataNode.put(Constants.IS_ACTIVE, Constants.ACTIVE_STATUS);
+        dataNode.set(Constants.CREATED_ON, TextNode.valueOf(String.valueOf(jsonEntity.getCreatedOn())));
+        dataNode.set(Constants.UPDATED_ON, TextNode.valueOf(String.valueOf(currentTime)));
+        dataNode.set(Constants.IS_ACTIVE, BooleanNode.valueOf(Constants.ACTIVE_STATUS));
         updateOtherDetailsWithDefaultValue(dataNode, jsonEntity);
         addSearchTags(dataNode);
         jsonEntity.setData(dataNode);
